@@ -1,0 +1,684 @@
+---
+title: "MiniProject Final"
+author: "Isobel Bender"
+date: "2024-02-20"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Set Up
+```{r}
+rm(list=ls())
+#install.packages("ggbreak")
+#install.packages("dplyr")
+library(dplyr)
+library(ggbreak) 
+library(ggplot2)
+library(car)
+require(usdm)
+require(psych)
+require(lmerTest)
+require(sjPlot)
+```
+
+
+#Data Loading and Cleaning
+```{r}
+#load data from the AVONET csv file 
+AVONET_full <- read.csv("AVONET_full.csv")
+#change HWI label for easier coding
+#AVONET_full$Hand.Wing.Index <- AVONET_full$`Hand-Wing.Index`
+#log transform Range size since it has a gamma distribution
+AVONET_full$Log.Range <- log(AVONET_full$Range.Size)
+#Subset to make df of only the Cracidae family
+
+
+AVONET_Cracidae <- AVONET_full %>%
+  filter(Family3=="Cracidae")
+
+
+#remove island endemic species
+AVONET_Cracidae <- AVONET_Cracidae[which(AVONET_Cracidae$Species3!="Pipile pipile"), ]
+#remove species extinct in the wild
+AVONET_Cracidae <- AVONET_Cracidae[which(AVONET_Cracidae$Species3!="Mitu mitu"), ]
+```
+
+Now we have a subsetted data frame with only the cracids of interest.
+
+#Preliminary Data Visualization
+
+##Histograms
+This is the range size not log transformed- has similar to a gamma distribution (continuous, positive only).
+```{r}
+par(mfrow=c(1,2))
+hist(AVONET_full$Range.Size, breaks=50)
+hist(AVONET_Cracidae$Range.Size, breaks=8)
+```
+Here is the histograms of the log transformed range size - more normally distributed so better for linear modelling.
+```{r}
+par(mfrow=c(1,2))
+hist(AVONET_full$Log.Range, breaks=50)
+hist(AVONET_Cracidae$Log.Range, breaks=20)
+```
+
+## Histogram for report
+```{r}
+#filtering out the entries with NA for Range Size
+AVONET_noNA <- AVONET_full %>%
+  filter(Range.Size != "NA")
+
+#Plot
+ggplot(AVONET_noNA, aes(x=Range.Size)) + 
+  geom_histogram(bins=150, fill="hotpink")+
+  labs(title="Histogram of Bird Species Range Size (n=9855)",
+       y="Number of Species")+ theme_bw()+
+  scale_x_continuous(
+    name="Range Size (km^2)",
+    breaks=c(0,50000000,100000000),
+    labels=c("0","50,000,000","100,000,000"))+
+  theme(axis.text.x = element_text( 
+                           size=10, angle=0))
+
+```
+
+##PCA 
+PCA on all 11 morphological traits. 
+```{r}
+cracid_pca <- princomp(AVONET_Cracidae[ , c(9:19)],cor=TRUE)
+summary(cracid_pca)
+```
+###Latent Root Criterion
+```{r}
+eigenvalues <- cracid_pca$sdev^2
+eigenvalues
+```
+Comp1 and Comp2 are sufficient. Others would be dropped as they are below 1.  
+
+###Scree Plot Criterion 
+```{r}
+plot(cracid_pca, type="lines", ylim=c(0,10))
+```
+Elbow to me seems to be at like 2
+
+###Relative percent variance criterion 
+```{r}
+summary(cracid_pca)
+```
+We want at least 70. This criterion says only Comp1. But the other two tests say 2 comps, so 2 comps used going forward.
+
+```{r}
+loadings(cracid_pca)
+```
+
+Comp1 is approximately Size/Heftiness/Big beak - "Beak Size and Body Size"
+Comp2 is Wing length/HWI/KD - Wing Shape and Dispersal Ability 
+See AVONET, Tobias 2022 - "The Kipp distance is a metric used to measure wing elongation in birds, which is related to flight efficiency and dispersal ability."
+
+```{r}
+biplot(cracid_pca) 
+```
+
+### PCA Plots
+```{r}
+cracid_comps<- cbind(AVONET_Cracidae, cracid_pca$scores[,c(1,2)])
+
+PCA_plot_range <- ggplot(data=cracid_comps, aes(x=Comp.1, y=Comp.2, 
+                                                   col=Range.Size))+
+  geom_point(size=4)+
+  scale_color_viridis_b()+
+  theme_bw()+
+  labs(title="PCA of Cracids")+
+  xlab("Component 1 (Beak Size and Body Size)")+
+  ylab("Component 2 (Wing Shape and Dispersal Ability)")+
+  geom_hline(yintercept=0, 
+                color = "black", size=0.5)+
+  geom_vline(xintercept=0, 
+                color = "black", size=0.5)
+
+print(PCA_plot_range) 
+```
+
+### PCA LM
+```{r}
+
+lm4<- lm(Log.Range~Comp.1*Comp.2, data = cracid_comps)
+summary(lm4)
+
+lm4.1<- lm(Log.Range~Comp.1+Comp.2, data = cracid_comps)
+summary(lm4.1)
+
+lm4.2<- lm(Log.Range~Comp.1, data = cracid_comps)
+summary(lm4.2)
+
+lm4.3<- lm(Log.Range~Comp.2, data = cracid_comps)
+summary(lm4.3)
+
+#although not significant, I want to plot them to see
+par(mfrow=c(1,2))
+plot(Log.Range~Comp.1,data = cracid_comps)
+abline(lm4.2)
+plot(Log.Range~Comp.2,data = cracid_comps)
+abline(lm4.3)
+
+```
+###Inspect - Plots and Outliers
+```{r}
+cooksDPCA <- cooks.distance(lm4)
+influential <- cooksDPCA[(cooksDPCA > (3 * mean(cooksDPCA, na.rm = TRUE)))]
+influential
+```
+```{r}
+par(mfrow=c(2,2))
+plot(lm4)
+```
+
+
+###Remove Outliers
+```{r}
+#This corresponds to entry 14 and 44
+cracid_comps[c(13,29,41),]
+
+#removing the outliers (although I believe they are valid, I just want to see how much influence they are exerting on the model - is the model signficant without them?)
+cracid_comps_no_out<- cracid_comps[-c(13,29,41),]
+
+lm4.0.1<- lm(Log.Range~Comp.1*Comp.2, data = cracid_comps_no_out)
+summary(lm4.0.1)
+
+lm4.0.2<- lm(Log.Range~Comp.1, data = cracid_comps_no_out)
+summary(lm4.0.2)
+
+lm4.0.3<- lm(Log.Range~Comp.2, data = cracid_comps_no_out)
+summary(lm4.0.3)
+
+#None are significant, still
+```
+
+#Supplementary Work 
+This is code I wanted to save and be able to reference in the future. None was included in the report.
+
+##LM Just HWI
+
+### in Cracids 
+```{r}
+#CRACIDS: Linear Model log(Range) vs. HWI
+lm1 <- lm(Log.Range~Hand.Wing.Index, data=AVONET_Cracidae)
+summary(lm1)
+# diagnostic/residual plots  
+par(mfrow=c(2,2))
+plot(lm1)
+# look OK - assumptions not violated - no Cook's distance outliers
+```
+
+### in all birds
+```{r}
+#HWI in 
+lm1.1 <- lm(Log.Range~Hand.Wing.Index, data=AVONET_full)
+summary(lm1.1)
+#significant
+#diagnostic plots
+par(mfrow=c(2,2))
+plot(lm1.1)
+# no violations 
+
+par(mfrow=c(1,1))
+plot(Log.Range~Hand.Wing.Index, data=AVONET_full)
+abline(lm1.1, col="red")
+```
+HWI does increase range size in all birds. R2 in all birds is 0.03. 
+
+### all birds w/ small HWI
+Subset all birds to just the birds with a relatively small HWI (similar to Cracids) - does the relationship still stand?
+Yes it does.
+```{r}
+AVONET_small_HWI <-  AVONET_full %>%
+  filter(Hand.Wing.Index<21)
+  
+lm1.2 <- lm(Log.Range~Hand.Wing.Index, data=AVONET_small_HWI)
+summary(lm1.2)
+
+plot(Log.Range~Hand.Wing.Index, data=AVONET_small_HWI, pch=19, cex=0.1)
+abline(lm1.2, col="red")
+```
+## LM Just mass
+Not significant
+```{r}
+lm1.4 <- lm(Log.Range~Mass, data=AVONET_Cracidae)
+summary(lm1.4)
+
+plot(lm1.4)
+```
+```{r}
+lm1.5 <- lm(Log.Range~Mass, data=AVONET_full)
+summary(lm1.5)
+
+plot(lm1.5)
+
+plot(Log.Range~Mass, data=AVONET_full)
+abline(lm1.5)
+```
+
+##LM All cracids, all variables 
+
+### VIF reduction
+There are 11 morphological variables in AVONET - many of these are incredibly collinear, so they must be reduced. I chose the threshold of 3. 
+
+```{r}
+AVONET_Cracidae <- as.data.frame(AVONET_Cracidae)
+vif(AVONET_Cracidae[9:19])
+vif(AVONET_Cracidae[c(9:15,17,18,19)])
+vif(AVONET_Cracidae[c(9:13,15,17,18,19)])
+vif(AVONET_Cracidae[c(9,11:13,15,17,18,19)])
+vif(AVONET_Cracidae[c(9,11:13,15,18,19)])
+vif(AVONET_Cracidae[c(9,11:12,15,18,19)])
+vif(AVONET_Cracidae[c(11:12,15,18,19)])
+vif(AVONET_Cracidae[c(11,15,18,19)])
+```
+```{r}
+lm2 <- lm(Log.Range ~ Beak.Width*Kipps.Distance*Tail.Length*Mass, data=AVONET_Cracidae)
+summary(lm2)
+#remove highest order interaction (4 way interaction)
+lm2.1 <- lm(Log.Range ~ 
+              Beak.Width*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance*Mass
+            +Beak.Width*Mass*Tail.Length
+            +Mass*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance
+            +Beak.Width*Mass
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Tail.Length*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae)
+summary(lm2.1)
+#remove BW:TL:M to get lm2.2
+lm2.2 <- lm(Log.Range ~ 
+              Beak.Width*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance*Mass
+            +Mass*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance
+            +Beak.Width*Mass
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Tail.Length*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae)
+summary(lm2.2)
+#remove KD:TL:Mass to get lm2.3
+lm2.3 <- lm(Log.Range ~ 
+              Beak.Width*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance*Mass
+            +Beak.Width*Kipps.Distance
+            +Beak.Width*Mass
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Tail.Length*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae)
+summary(lm2.3)
+#We remove TL:Mass to get lm2.4
+lm2.4 <- lm(Log.Range ~ 
+              Beak.Width*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance*Mass
+            +Beak.Width*Kipps.Distance
+            +Beak.Width*Mass
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae)
+summary(lm2.4)
+# all terms significant, nothing can be removed
+```
+
+###Inspect LM and outliers
+```{r}
+par(mfrow=c(1,1))
+plot(lm2.4)
+```
+
+```{r}
+cooksD <- cooks.distance(lm2.4)
+influential <- cooksD[(cooksD > (3 * mean(cooksD, na.rm = TRUE)))]
+influential
+```
+
+### LM without outliers 
+The outliers were 6, 14, 30, 42. They were removed and the process restarted 
+```{r}
+#note - these don't match the numbers given above but for some reason they do select the outliers. 
+AVONET_Cracidae[c(6,13,29,41),]
+
+#removing the outliers 
+AVONET_Cracidae_no_out <- AVONET_Cracidae[-c(6,13,29,41),]
+
+lm2.4.1 <- lm(Log.Range ~ Beak.Width*Kipps.Distance*Tail.Length*Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.1)
+
+
+lm2.4.2 <- lm(Log.Range ~ 
+              Beak.Width*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance*Mass
+            +Beak.Width*Mass*Tail.Length
+            +Mass*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance
+            +Beak.Width*Mass
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Tail.Length*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.2)
+#remove BW:TL:M
+lm2.4.3 <- lm(Log.Range ~ 
+              Beak.Width*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance*Mass
+            +Mass*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance
+            +Beak.Width*Mass
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Tail.Length*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.3)
+#remove KD:TL:M
+lm2.4.4 <- lm(Log.Range ~ 
+              Beak.Width*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance*Mass
+            +Beak.Width*Kipps.Distance
+            +Beak.Width*Mass
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Tail.Length*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.4)
+#remove BW:KD:Mass
+lm2.4.5 <- lm(Log.Range ~ 
+              Beak.Width*Kipps.Distance*Tail.Length
+            +Beak.Width*Kipps.Distance
+            +Beak.Width*Mass
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Tail.Length*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.5)
+#remove BW:KD:TL
+lm2.4.6 <- lm(Log.Range ~ 
+              Beak.Width*Kipps.Distance
+            +Beak.Width*Mass
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Tail.Length*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.6)
+#remove BW:M
+lm2.4.7 <- lm(Log.Range ~ 
+            Beak.Width*Kipps.Distance
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Tail.Length*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.7)
+#remove TL:M
+lm2.4.8 <- lm(Log.Range ~ 
+            Beak.Width*Kipps.Distance
+            +Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.8)
+#remove BW:KD
+lm2.4.9 <- lm(Log.Range ~ 
+            Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Kipps.Distance*Mass
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.9)
+#remove KD:M
+lm2.4.10 <- lm(Log.Range ~ 
+            Beak.Width*Tail.Length
+            +Kipps.Distance*Tail.Length
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.10)
+#remove BW:TL
+lm2.4.11 <- lm(Log.Range ~ 
+            Kipps.Distance*Tail.Length
+            +Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.11)
+#remove TL:KD
+lm2.4.12 <- lm(Log.Range ~ 
+            Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.12)
+#remove BW
+lm2.4.13 <- lm(Log.Range ~ 
+            Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.13)
+#remove TL
+lm2.4.14 <- lm(Log.Range ~ 
+            Kipps.Distance
+            +Mass, data=AVONET_Cracidae_no_out)
+summary(lm2.4.14)
+#remove mass
+lm2.4.15 <- lm(Log.Range ~ 
+            Kipps.Distance, data=AVONET_Cracidae_no_out)
+summary(lm2.4.15)
+#nothing is significant
+```
+
+### Simpler Linear models, all points
+Including just the four vif-reduced variables and then cutting down. All cracid data included (including the outliers).
+```{r}
+lm3 <- lm(Log.Range ~Beak.Width
+            +Kipps.Distance
+            +Tail.Length
+            +Mass, data=AVONET_Cracidae)
+summary(lm3)
+#remove TL
+lm3.1 <- lm(Log.Range ~Beak.Width
+            +Kipps.Distance
+            +Mass, data=AVONET_Cracidae)
+summary(lm3.1)
+#remove KD
+lm3.2 <- lm(Log.Range ~Beak.Width
+            +Mass, data=AVONET_Cracidae)
+summary(lm3.2)
+#remove Mass
+lm3.1 <- lm(Log.Range ~Beak.Width, data=AVONET_Cracidae)
+summary(lm3.1)
+#Beak Width is significantly impacting range size.
+
+plot(lm3.1)
+#Outliers are the same, they are the main issue.
+
+plot(Log.Range ~Beak.Width, data=AVONET_Cracidae)
+abline(lm3.1)
+```
+
+```{r}
+cooksD1 <- cooks.distance(lm3.1)
+influential1 <- cooksD1[(cooksD1 > (3 * mean(cooksD, na.rm = TRUE)))]
+influential1
+```
+Now only two outliers, 14 and 42. 
+
+
+## PCA GLM
+Just checking that a gamma link function with a GLM gives the same result as log transforming the Range Size. It does. 
+```{r}
+glm1<- glm(Range.Size~Comp.1*Comp.2, data = cracid_comps, family='Gamma')
+summary(glm1)
+
+glm2<- glm(Range.Size~Comp.1+Comp.2, data = cracid_comps, family='Gamma')
+summary(glm2)
+
+plot(glm1)
+```
+## GLM with only beak width 
+This is interesting as it shows that beak width isn't significant in a GLM.
+```{r}
+glm3<- glm(Range.Size~ Beak.Width, data=AVONET_Cracidae, family='Gamma')
+
+summary(glm3)
+plot(glm3)
+
+cooksD3 <- cooks.distance(glm3)
+influential <- cooksD3[(cooksD3 > (3 * mean(cooksD, na.rm = TRUE)))]
+influential
+
+#only two outliers here, 14 and 21 
+```
+
+
+SO far I have discovered that there is no relationship between traits and range size. Sad. 
+
+
+## Full avonet PCA and LMs
+```{r}
+full_pca <- princomp(AVONET_full[ , c(9:19)],cor=TRUE)
+summary(full_pca)
+#two comps
+eigenvalues <- full_pca$sdev^2
+eigenvalues
+#three comps
+plot(full_pca, type="lines", ylim=c(0,10))
+#two comps
+```
+Two comp sufficient
+
+```{r}
+biplot(full_pca) 
+```
+
+```{r}
+full_comps<- cbind(AVONET_full, full_pca$scores[,c(1,2)])
+
+lm_full<- lm(Log.Range~Comp.1*Comp.2, data = full_comps)
+summary(lm_full)
+
+lm_full1<- lm(Log.Range~Comp.1+Comp.2, data = full_comps)
+summary(lm_full1)
+
+lm_full2<- lm(Log.Range~Comp.1, data = full_comps)
+summary(lm_full2)
+
+lm_full3<- lm(Log.Range~Comp.2, data = full_comps)
+summary(lm_full3)
+```
+
+```{r}
+loadings(full_pca)
+```
+Comp1 is beak shape, wing length, secondary, overall beak shape
+Comp2 is -HWI, -KD, Mass, Tarsus - heftiness/big and bad at dispersal
+
+```{r}
+par(mfrow=c(1,2))
+plot(Range.Size~Comp.1, data = full_comps)
+abline(lm_full2, col="red")
+plot(Range.Size~Comp.2, data = full_comps)
+abline(lm_full3, col="red")
+```
+
+##Latitude (Rapoport's Rule)
+
+```{r}
+vif(AVONET_Cracidae[c(31:33)])
+vif(AVONET_Cracidae[c(31:32)])
+```
+
+
+```{r}
+lm_minlat <- lm(Log.Range ~ Min.Latitude, data=AVONET_Cracidae)
+summary(lm_minlat)
+
+lm_maxlat <- lm(Log.Range ~ Max.Latitude, data=AVONET_Cracidae)
+summary(lm_maxlat)
+
+lm_lat <- lm(Log.Range ~ Min.Latitude+Max.Latitude, data=AVONET_Cracidae)
+summary(lm_lat)
+
+par(mfrow=c(1,2))
+plot(Log.Range ~ Min.Latitude, data=AVONET_Cracidae)
+abline(lm_minlat)
+
+plot(Log.Range ~ Max.Latitude, data=AVONET_Cracidae)
+abline(lm_maxlat)
+```
+
+
+```{r}
+vif(AVONET_full[c(31:33)])
+vif(AVONET_full[c(31:32)])
+```
+
+```{r}
+lm_minlatfull <- lm(Log.Range ~ Min.Latitude, data=AVONET_full)
+summary(lm_minlatfull)
+
+lm_maxlatfull <- lm(Log.Range ~ Max.Latitude, data=AVONET_full)
+summary(lm_maxlatfull)
+
+par(mfrow=c(1,2))
+plot(Log.Range ~ Min.Latitude, data=AVONET_full)
+abline(lm_minlatfull,col="red")
+
+plot(Log.Range ~ Max.Latitude, data=AVONET_full)
+abline(lm_maxlatfull,col="red")
+```
+```{r}
+R.Version()
+```
+
